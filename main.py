@@ -1,31 +1,52 @@
-import requests
+from datetime import datetime, timedelta
+from data_manager import DataManager
+from flight_search import FlightSearch
+from notification_manager import NotificationManager
 
-sheety_post_endpoint = "https://api.sheety.co/225f0ec4563dbb435c97abff230d4e64/flightDeals/users"
-sheety_post_api = ""
+ORIGIN_CITY_IATA = "LON"
 
-print("Welcome to the Diamond Tusks Flight Club")
-print("We find the best flight deals and email them to you!")
+data_manager = DataManager()
+flight_search = FlightSearch()
+notification_manager = NotificationManager()
 
-email_verified = False
-while not email_verified:
-  first_name = input("Enter your first name: ").title()
-  last_name = input("Enter you lastname: ").title()
-  email = input("Enter your email: ")
-  email_verify = input("Enter you email again to verify: ")
-  if email == email_verify:
-    email_verified = True
-  else:
-    print("Email doesnt match. Try again.")
+sheet_data = data_manager.get_destination_data()
 
-new_user = {
-  "user": {
-    "firstName": first_name,
-    "lastName": last_name,
-    "email": email,
-  }
-}
-  
+if sheet_data[0]["iataCode"] == "":
+    city_names = [row["city"] for row in sheet_data]
+    data_manager.city_codes = flight_search.get_destination_code(city_names)
+    data_manager.update_destination_codes()
+    sheet_data = data_manager.get_destination_data()
 
-sheet_headers = {"Authorization": "Bearer fhgt475fhdhs383djd"}
-sheet_response = requests.post(url=sheety_post_endpoint, json=new_user, headers=sheet_headers)
-print(f"Welcome to the club {first_name}! Look forward to some flight deals.")
+destinations = {
+    data["iataCode"]: {
+        "id": data["id"],
+        "city": data["city"],
+        "price": data["lowestPrice"]
+    } for data in sheet_data}
+
+tomorrow = datetime.now() + timedelta(days=1)
+six_month_from_today = datetime.now() + timedelta(days=(6 * 30))
+
+for destination_code in destinations:
+    flight = flight_search.check_flights(
+        ORIGIN_CITY_IATA,
+        destination_code["iataCode"],
+        from_time=tomorrow,
+        to_time=six_month_from_today
+    )
+    print(flight.price)
+    if flight is None:
+        continue
+
+    if flight.price < destinations[destination_code]["price"]:
+
+        users = data_manager.get_customer_email()
+        emails = [row["email"] for row in users]
+        names = [row["firstNames"] for row in users]
+
+        message=f"Low price alert! Only £{flight.price} to fly from {flight.origin_city}-{flight.origin_airport} to {flight.destination_city}-{flight.destination_airport}, from {flight.out_date} to {flight.return_date}."
+        if flight.stop_overs > 0:
+            message += f"\n\nFlight has {flight.stop_overs}, via {flight.via_city}."
+
+        link = f"https://www.google.co.uk/flights?hl=en#flt={flight.origin_airport}.{flight.destination_airport}.{flight.out_date}*{flight.destination_airport}.{flight.origin_airport}.{flight.return_date}"
+        notification_manager.send_emails(emails, message, link)
